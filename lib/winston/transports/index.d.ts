@@ -9,6 +9,7 @@ import * as Transport from 'winston-transport';
 
 declare namespace winston {
   interface ConsoleTransportOptions extends Transport.TransportStreamOptions {
+    consoleWarnLevels?: string[],
     stderrLevels?: string[];
     debugStdout?: boolean;
     eol?: string;
@@ -54,7 +55,7 @@ declare namespace winston {
     ssl?: any;
     host?: string;
     port?: number;
-    auth?: { username: string; password: string; };
+    auth?: { username?: string | undefined, password?: string | undefined, bearer?: string | undefined };
     path?: string;
     agent?: Agent;
     headers?: object;
@@ -65,7 +66,7 @@ declare namespace winston {
     ssl: boolean;
     host: string;
     port: number;
-    auth?: { username: string, password: string };
+    auth?: { username?: string | undefined, password?: string | undefined, bearer?: string | undefined };
     path: string;
     agent?: Agent | null;
 
@@ -84,9 +85,13 @@ declare namespace winston {
   }
 
   interface Transports {
+    FileTransportOptions: FileTransportOptions;
     File: FileTransportInstance;
+    ConsoleTransportOptions: ConsoleTransportOptions;
     Console: ConsoleTransportInstance;
+    HttpTransportOptions: HttpTransportOptions;
     Http: HttpTransportInstance;
+    StreamTransportOptions: StreamTransportOptions;
     Stream: StreamTransportInstance;
   }
 }

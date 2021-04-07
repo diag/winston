@@ -20,6 +20,7 @@ const winston = require('../lib/winston');
 const TransportStream = require('winston-transport');
 const format = require('../lib/winston').format;
 const helpers = require('./helpers');
+const mockTransport = require('./helpers/mocks/mock-transport');
 
 describe('Logger', function () {
   it('new Logger()', function () {
@@ -64,6 +65,41 @@ describe('Logger', function () {
     Object.keys(winston.config.syslog.levels).forEach(level => {
       assume(logger[level]).is.a('function');
     })
+  });
+
+  it('new Logger({ levels }) custom methods are not bound to instance', function (done) {
+    var logger = winston.createLogger({
+      level: 'error',
+      exitOnError: false,
+      transports: []
+    });
+
+    let logs = [];
+    let extendedLogger = Object.create(logger, {
+      write: {
+        value: function(...args) {
+          logs.push(args);
+          if (logs.length === 4) {
+            assume(logs.length).is.eql(4);
+            assume(logs[0]).is.eql([{ test: 1, level: 'info' }]);
+            assume(logs[1]).is.eql([{ test: 2, level: 'warn' }]);
+            assume(logs[2]).is.eql([{ message: 'test3', level: 'info' }])
+            assume(logs[3]).is.eql([{ with: 'meta',
+              test: 4,
+              level: 'warn',
+              message: 'a warning'
+            }]);
+
+            done();
+          }
+        }
+      }
+    });
+
+    extendedLogger.log('info', { test: 1 });
+    extendedLogger.log('warn', { test: 2 });
+    extendedLogger.info('test3');
+    extendedLogger.warn('a warning', { with: 'meta', test: 4 });
   });
 
   it('.add({ invalid Transport })', function () {
@@ -256,21 +292,40 @@ describe('Logger (levels)', function () {
     done();
   });
 
+  it('.<level>()', function (done) {
+    var logger = helpers.createLogger(function (info) {
+      assume(info).is.an('object');
+      assume(info.level).equals('info');
+      assume(info.message).is.a('string');
+      assume(info[MESSAGE]).is.a('string');
+      assume(info.message).equals('');
+      assume(info[MESSAGE]).equals(JSON.stringify({
+        level: 'info',
+        message: ''
+      }));
+
+      done();
+    });
+
+    logger.info();
+    logger.info('');
+  });
+
   it('default levels', function (done) {
     var logger = winston.createLogger();
-    var expected = { message: 'foo', level: 'info' };
+    var expected = { message: 'foo', level: 'debug' };
 
     function logLevelTransport(level) {
       return new TransportStream({
         level: level,
         log: function (obj) {
-          if (level === 'debug') {
-            assume(obj).equals(undefined, 'Transport on level debug should never be called');
+          if (level === 'info') {
+            assume(obj).equals(undefined, 'Transport on level info should never be called');
           }
 
           assume(obj.message).equals('foo');
-          assume(obj.level).equals('info');
-          assume(obj[MESSAGE]).equals(JSON.stringify({ message: 'foo', level: 'info' }));
+          assume(obj.level).equals('debug');
+          assume(obj[MESSAGE]).equals(JSON.stringify({ message: 'foo', level: 'debug' }));
           done();
         }
       });
@@ -684,7 +739,7 @@ describe('Logger (winston@2 logging API)', function () {
   it('.log(level, formatStr, ...splat, meta)', function (done) {
     const format = winston.format.combine(
       winston.format.splat(),
-      winston.format.printf(info => `${info.level}: ${info.message} ${JSON.stringify(info.meta)}`)
+      winston.format.printf(info => `${info.level}: ${info.message} ${JSON.stringify({ thisIsMeta: info.thisIsMeta })}`)
     );
 
     var logger = helpers.createLogger(function (info) {
@@ -692,7 +747,7 @@ describe('Logger (winston@2 logging API)', function () {
       assume(info.level).equals('info');
       assume(info.message).equals('100% such wow {"much":"javascript"}');
       assume(info[SPLAT]).deep.equals([100, 'wow', { much: 'javascript' }]);
-      assume(info.meta).deep.equals({ thisIsMeta: true });
+      assume(info.thisIsMeta).true();
       assume(info[MESSAGE]).equals('info: 100% such wow {"much":"javascript"} {"thisIsMeta":true}');
       done();
     }, format);
@@ -716,7 +771,33 @@ describe('Logger (logging exotic data types)', function () {
       logger.log(err);
     });
 
-    it(`.info('Hello') and .info('Hello %d') both preserve meta without splat format`, function (done) {
+    it(`.info('Hello') preserve meta without splat format`, function (done) {
+      const logged = [];
+      const logger = helpers.createLogger(function (info, enc, next) {
+        logged.push(info);
+        assume(info.label).equals('world');
+        next();
+
+        if (logged.length === 1) done();
+      });
+
+      logger.info('Hello', { label: 'world' });
+    });
+
+    it(`.info('Hello %d') does not mutate unnecessarily with string interpolation tokens`, function (done) {
+      const logged = [];
+      const logger = helpers.createLogger(function (info, enc, next) {
+        logged.push(info);
+        assume(info.label).equals(undefined);
+        next();
+
+        if (logged.length === 1) done();
+      });
+
+      logger.info('Hello %j', { label: 'world' }, { extra: true });
+    });
+
+    it(`.info('Hello') and .info('Hello %d') preserve meta with splat format`, function (done) {
       const logged = [];
       const logger = helpers.createLogger(function (info, enc, next) {
         logged.push(info);
@@ -724,10 +805,10 @@ describe('Logger (logging exotic data types)', function () {
         next();
 
         if (logged.length === 2) done();
-      });
+      }, format.splat());
 
       logger.info('Hello', { label: 'world' });
-      logger.info('Hello %d', { label: 'world' });
+      logger.info('Hello %d', 100, { label: 'world' });
     });
   });
 
@@ -836,5 +917,165 @@ describe('Logger (profile, startTimer)', function (done) {
         level: 'info'
       });
     }, 100);
+  });
+});
+
+describe('Should bubble transport events', () => {
+  it('error', (done) => {
+    const consoleTransport = new winston.transports.Console();
+    const logger = winston.createLogger({
+      transports: [consoleTransport]
+    });
+
+    logger.on('error', (err, transport) => {
+      assume(err).instanceOf(Error);
+      assume(transport).is.an('object');
+      done();
+    });
+    consoleTransport.emit('error', new Error());
+  });
+
+  it('warn', (done) => {
+    const consoleTransport = new winston.transports.Console();
+    const logger = winston.createLogger({
+      transports: [consoleTransport]
+    });
+
+    logger.on('warn', (err, transport) => {
+      assume(err).instanceOf(Error);
+      assume(transport).is.an('object');
+      done();
+    });
+    consoleTransport.emit('warn', new Error());
+  });
+});
+
+describe('Should support child loggers & defaultMeta', () => {
+  it('sets child meta for text messages correctly', (done) => {
+    const assertFn = ((msg) => {
+      assume(msg.level).equals('info');
+      assume(msg.message).equals('dummy message');
+      assume(msg.requestId).equals('451');
+      done();
+    });
+
+    const logger = winston.createLogger({
+      transports: [
+        mockTransport.createMockTransport(assertFn)
+      ]
+    });
+
+    const childLogger = logger.child({ requestId: '451' });
+    childLogger.info('dummy message');
+  });
+
+  it('sets child meta for json messages correctly', (done) => {
+    const assertFn = ((msg) => {
+      assume(msg.level).equals('info');
+      assume(msg.message.text).equals('dummy');
+      assume(msg.requestId).equals('451');
+      done();
+    });
+
+    const logger = winston.createLogger({
+      transports: [
+        mockTransport.createMockTransport(assertFn)
+      ]
+    });
+
+    const childLogger = logger.child({ requestId: '451' });
+    childLogger.info({ text: 'dummy' });
+  });
+
+  it('merges child and provided meta correctly', (done) => {
+    const assertFn = ((msg) => {
+      assume(msg.level).equals('info');
+      assume(msg.message).equals('dummy message');
+      assume(msg.service).equals('user-service');
+      assume(msg.requestId).equals('451');
+      done();
+    });
+
+    const logger = winston.createLogger({
+      transports: [
+        mockTransport.createMockTransport(assertFn)
+      ]
+    });
+
+    const childLogger = logger.child({ service: 'user-service' });
+    childLogger.info('dummy message', { requestId: '451' });
+  });
+
+  it('provided meta take precedence over defaultMeta', (done) => {
+    const assertFn = ((msg) => {
+      assume(msg.level).equals('info');
+      assume(msg.message).equals('dummy message');
+      assume(msg.service).equals('audit-service');
+      assume(msg.requestId).equals('451');
+      done();
+    });
+
+    const logger = winston.createLogger({
+      defaultMeta: { service: 'user-service' },
+      transports: [
+        mockTransport.createMockTransport(assertFn)
+      ]
+    });
+
+    logger.info('dummy message', {
+      requestId: '451',
+      service: 'audit-service'
+    });
+  });
+
+  it('provided meta take precedence over child meta', (done) => {
+    const assertFn = ((msg) => {
+      assume(msg.level).equals('info');
+      assume(msg.message).equals('dummy message');
+      assume(msg.service).equals('audit-service');
+      assume(msg.requestId).equals('451');
+      done();
+    });
+
+    const logger = winston.createLogger({
+      transports: [
+        mockTransport.createMockTransport(assertFn)
+      ]
+    });
+
+    const childLogger = logger.child({ service: 'user-service' });
+    childLogger.info('dummy message', {
+      requestId: '451',
+      service: 'audit-service'
+    });
+  });
+
+  it('handles error stack traces in child loggers correctly', (done) => {
+    const assertFn = ((msg) => {
+      assume(msg.level).equals('error');
+      assume(msg.message).equals('dummy error');
+      assume(msg.stack).includes('logger.test.js');
+      assume(msg.service).equals('user-service');
+      done();
+    });
+
+    const logger = winston.createLogger({
+      transports: [
+        mockTransport.createMockTransport(assertFn)
+      ]
+    });
+
+    const childLogger = logger.child({ service: 'user-service' });
+    childLogger.error(Error('dummy error'));
+  });
+
+  it('defaultMeta() autobinds correctly', (done) => {
+    const logger = helpers.createLogger(info => {
+      assume(info.message).equals('test');
+      done();
+    });
+
+    const log = logger.info;
+    log('test');
   });
 });
